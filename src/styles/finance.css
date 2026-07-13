@@ -1,0 +1,312 @@
+/* ============================================
+   Finance Page - Monthly Ledger
+   ============================================ */
+
+.finance-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.finance-rate-pill {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-elevated);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+  box-shadow: var(--shadow-xs);
+}
+
+.finance-overview-band {
+  margin-bottom: var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-lg);
+  background: var(--color-bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+
+.finance-overview-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.finance-overview-label {
+  color: var(--color-text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+}
+
+.finance-overview-main strong {
+  font-size: var(--text-3xl);
+  line-height: 1;
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.finance-overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+  padding-top: var(--space-4);
+}
+
+.finance-overview-metrics div {
+  min-width: 0;
+}
+
+.finance-overview-metrics span {
+  display: block;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+  margin-bottom: var(--space-1);
+}
+
+.finance-overview-metrics strong {
+  display: block;
+  color: var(--color-text);
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.finance-month-ledger {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.finance-month-card {
+  overflow: hidden;
+  border: 1px solid var(--color-border-light);
+  box-shadow: var(--shadow-sm);
+}
+
+.finance-month-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--color-border-light);
+  background: linear-gradient(180deg, rgba(var(--color-accent-rgb), 0.06), transparent);
+}
+
+.finance-month-header h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+}
+
+.finance-month-header span {
+  display: block;
+  margin-top: var(--space-1);
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.finance-month-balance {
+  flex-shrink: 0;
+  font-size: var(--text-xl);
+  font-weight: var(--weight-bold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+  text-align: right;
+}
+
+.finance-month-summary {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.finance-month-summary span {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  font-variant-numeric: tabular-nums;
+}
+
+.finance-month-summary .summary-income {
+  color: var(--color-success);
+  background: var(--color-success-light);
+}
+
+.finance-month-summary .summary-expense {
+  color: var(--color-danger);
+  background: var(--color-danger-light);
+}
+
+.finance-transaction-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.finance-transaction-row {
+  width: 100%;
+  min-height: 72px;
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto 16px;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border-light);
+  background: var(--color-bg-elevated);
+  text-align: left;
+  transition: background var(--transition-fast), transform var(--transition-fast);
+}
+
+.finance-transaction-row:last-child {
+  border-bottom: 0;
+}
+
+.finance-transaction-row:hover {
+  background: var(--color-bg-hover);
+}
+
+.finance-transaction-row:active {
+  transform: scale(0.995);
+}
+
+.finance-transaction-row:disabled {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.finance-transaction-icon {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-md);
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.finance-transaction-icon.income {
+  background: var(--color-success-light);
+}
+
+.finance-transaction-icon.expense {
+  background: var(--color-danger-light);
+}
+
+.finance-transaction-main {
+  min-width: 0;
+}
+
+.finance-transaction-main strong,
+.finance-transaction-main small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.finance-transaction-main strong {
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  margin-bottom: 2px;
+}
+
+.finance-transaction-main small {
+  color: var(--color-text-tertiary);
+  font-size: var(--text-xs);
+}
+
+.finance-transaction-amounts {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  font-variant-numeric: tabular-nums;
+}
+
+.finance-transaction-amounts strong {
+  font-size: var(--text-md);
+  font-weight: var(--weight-bold);
+  white-space: nowrap;
+}
+
+.finance-transaction-usd {
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-semibold);
+  white-space: nowrap;
+}
+
+.finance-empty-card {
+  border: 1px solid var(--color-border-light);
+}
+
+.text-success {
+  color: var(--color-success) !important;
+}
+
+.text-danger {
+  color: var(--color-danger) !important;
+}
+
+@media (max-width: 520px) {
+  .finance-page-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .finance-rate-pill {
+    align-self: flex-start;
+  }
+
+  .finance-overview-main {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .finance-overview-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .finance-month-header {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .finance-month-balance {
+    text-align: left;
+  }
+
+  .finance-transaction-row {
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    gap: var(--space-2);
+  }
+
+  .finance-transaction-row .settings-arrow {
+    display: none;
+  }
+
+  .finance-transaction-icon {
+    width: 36px;
+    height: 36px;
+  }
+}
