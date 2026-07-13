@@ -97,4 +97,6 @@
 4. 在 `Settings > Pages` 将 Source 设为 `GitHub Actions`，推送 `main` 分支后由工作流自动测试、构建和发布。
 5. 将最终 Pages 地址加入 Supabase Auth 的 Site URL 和 Redirect URLs。
 
+已有本地数据时，应先在原来的 `http://localhost:5173/` 页面创建或登录云端账号并输入原主密码，确认首次同步完成后再到 Pages 地址登录。验证邮件会回到发起注册的页面，避免从空白设备创建一份新的云端数据。
+
 仓库已忽略 `.env.local`、本地备份、日志、`node_modules` 和 `dist`。Supabase Publishable Key 可以出现在前端构建中，真正的数据访问边界由登录会话和 RLS 策略提供；不要把 `service_role` key 放入前端或 GitHub Actions 变量。

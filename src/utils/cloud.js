@@ -98,7 +98,14 @@ export async function signInCloud(email, password) {
 
 export async function signUpCloud(email, password) {
   ensureClient();
-  const { data, error } = await client.auth.signUp({ email, password });
+  const emailRedirectTo = typeof window === 'undefined'
+    ? undefined
+    : `${window.location.origin}${window.location.pathname}`;
+  const { data, error } = await client.auth.signUp({
+    email,
+    password,
+    options: emailRedirectTo ? { emailRedirectTo } : undefined,
+  });
   if (error) throw error;
   session = data.session;
   if (session) await refreshRemoteVault();
