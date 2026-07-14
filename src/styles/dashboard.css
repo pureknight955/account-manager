@@ -251,6 +251,10 @@
     padding: var(--space-4) var(--space-5);
   }
 
+  .vacancy-card {
+    padding: var(--space-4) var(--space-5);
+  }
+
   .finance-summary {
     padding: var(--space-5);
   }

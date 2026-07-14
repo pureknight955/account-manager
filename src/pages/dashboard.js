@@ -56,7 +56,7 @@ function renderSeatVacancies(accounts, allMembers) {
   if (businessAccounts.length === 0) {
     return `
       <section class="card dashboard-section">
-        <div class="card-header section-title" style="font-size: 1.15rem; font-weight: 700; color: #3b82f6; display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem; border-bottom: 1px solid rgba(59, 130, 246, 0.15); padding-bottom: 0.75rem;">
+        <div class="card-header section-title" style="font-size: 1.15rem; font-weight: 700; color: #3b82f6; display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem; border-bottom: none; padding-bottom: 0.75rem;">
           <span style="font-size: 1.3rem;">🪑</span> <span>席位空缺</span>
         </div>
         <div class="card-body">
@@ -141,7 +141,7 @@ function renderSeatVacancies(accounts, allMembers) {
 
   return `
     <section class="card dashboard-section">
-      <div class="card-header section-title" style="font-size: 1.15rem; font-weight: 700; color: #3b82f6; display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem; border-bottom: 1px solid rgba(59, 130, 246, 0.15); padding-bottom: 0.75rem;">
+      <div class="card-header section-title" style="font-size: 1.15rem; font-weight: 700; color: #3b82f6; display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem; border-bottom: none; padding-bottom: 0.75rem;">
         <span style="font-size: 1.3rem;">🪑</span> <span>席位空缺</span>
       </div>
       <div class="card-body">
@@ -260,7 +260,7 @@ function renderMemberPaymentReminders(accounts, allMembers) {
 
   return `
     <section class="card dashboard-section">
-      <div class="card-header section-title" style="font-size: 1.15rem; font-weight: 700; color: #10b981; display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem; border-bottom: 1px solid rgba(16, 185, 129, 0.15); padding-bottom: 0.75rem;">
+      <div class="card-header section-title" style="font-size: 1.15rem; font-weight: 700; color: #10b981; display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem; border-bottom: none; padding-bottom: 0.75rem;">
         <span style="font-size: 1.3rem;">💰</span> <span>成员缴费提醒</span>
       </div>
       <div class="card-body">
