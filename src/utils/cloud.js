@@ -18,6 +18,7 @@ let listenersBound = false;
 let syncTimer = null;
 let syncInFlight = null;
 let lastError = '';
+let passwordRecoveryMode = false;
 
 export function isCloudConfigured() {
   return Boolean(SUPABASE_URL && SUPABASE_KEY);
@@ -34,6 +35,20 @@ export async function initializeCloud() {
     },
   });
 
+  passwordRecoveryMode = hasPasswordRecoveryMarker();
+  client.auth.onAuthStateChange((event, nextSession) => {
+    session = nextSession;
+    if (event === 'PASSWORD_RECOVERY') {
+      passwordRecoveryMode = true;
+      if (typeof document !== 'undefined'
+        && document.querySelector('.page-container')?.childElementCount) {
+        queueMicrotask(() => window.navigateTo?.('cloud-password-reset'));
+      }
+    }
+    if (!session) remoteVault = null;
+    dispatchStatus();
+  });
+
   const { data, error } = await client.auth.getSession();
   if (error) throw error;
   session = data.session;
@@ -42,6 +57,11 @@ export async function initializeCloud() {
 
   if (session) {
     try {
+      await clearRegistrationCodeMetadata();
+    } catch (error) {
+      console.warn('Could not clear registration metadata:', error);
+    }
+    try {
       await refreshRemoteVault();
       lastError = '';
     } catch (error) {
@@ -49,17 +69,20 @@ export async function initializeCloud() {
     }
   }
 
-  client.auth.onAuthStateChange((_event, nextSession) => {
-    session = nextSession;
-    if (!session) remoteVault = null;
-    dispatchStatus();
-  });
-
   return getCloudStatus();
 }
 
 export function getCloudSession() {
   return session;
+}
+
+export function isCloudPasswordRecoveryMode() {
+  return passwordRecoveryMode;
+}
+
+export function cancelCloudPasswordRecovery() {
+  passwordRecoveryMode = false;
+  clearPasswordRecoveryMarker();
 }
 
 export function getCloudStatus() {
@@ -90,13 +113,18 @@ export async function signInCloud(email, password) {
   const { data, error } = await client.auth.signInWithPassword({ email, password });
   if (error) throw error;
   session = data.session;
+  try {
+    await clearRegistrationCodeMetadata();
+  } catch (metadataError) {
+    console.warn('Could not clear registration metadata:', metadataError);
+  }
   await refreshRemoteVault();
   lastError = '';
   dispatchStatus();
   return data;
 }
 
-export async function signUpCloud(email, password) {
+export async function signUpCloud(email, password, registrationCode) {
   ensureClient();
   const emailRedirectTo = typeof window === 'undefined'
     ? undefined
@@ -104,11 +132,40 @@ export async function signUpCloud(email, password) {
   const { data, error } = await client.auth.signUp({
     email,
     password,
-    options: emailRedirectTo ? { emailRedirectTo } : undefined,
+    options: {
+      ...(emailRedirectTo ? { emailRedirectTo } : {}),
+      data: { registration_code: String(registrationCode || '').trim() },
+    },
   });
   if (error) throw error;
   session = data.session;
-  if (session) await refreshRemoteVault();
+  if (session) {
+    try {
+      await clearRegistrationCodeMetadata();
+    } catch (metadataError) {
+      console.warn('Could not clear registration metadata:', metadataError);
+    }
+    await refreshRemoteVault();
+  }
+  dispatchStatus();
+  return data;
+}
+
+export async function requestCloudPasswordReset(email) {
+  ensureClient();
+  const redirectTo = getPasswordRecoveryRedirectUrl();
+  const { data, error } = await client.auth.resetPasswordForEmail(email, { redirectTo });
+  if (error) throw error;
+  return data;
+}
+
+export async function updateCloudPassword(password) {
+  ensureSignedIn();
+  const { data, error } = await client.auth.updateUser({ password });
+  if (error) throw error;
+  passwordRecoveryMode = false;
+  clearPasswordRecoveryMarker();
+  if (data.user && session) session = { ...session, user: data.user };
   dispatchStatus();
   return data;
 }
@@ -336,6 +393,39 @@ function ensureSignedIn() {
   if (!session) throw new Error('请先登录云端账号。');
 }
 
+async function clearRegistrationCodeMetadata() {
+  const registrationCode = session?.user?.user_metadata?.registration_code;
+  if (!registrationCode) return;
+
+  const { data, error } = await client.auth.updateUser({ data: { registration_code: null } });
+  if (error) throw error;
+  if (data.user && session) session = { ...session, user: data.user };
+}
+
+function getPasswordRecoveryRedirectUrl() {
+  if (typeof window === 'undefined') return undefined;
+  const url = new URL(window.location.href);
+  url.search = '';
+  url.hash = '';
+  url.searchParams.set('mode', 'cloud-password-recovery');
+  return url.toString();
+}
+
+function hasPasswordRecoveryMarker() {
+  if (typeof window === 'undefined') return false;
+  const query = new URLSearchParams(window.location.search);
+  const hash = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+  return query.get('mode') === 'cloud-password-recovery' || hash.get('type') === 'recovery';
+}
+
+function clearPasswordRecoveryMarker() {
+  if (typeof window === 'undefined') return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete('mode');
+  url.hash = '';
+  window.history.replaceState({}, '', `${url.pathname}${url.search}`);
+}
+
 function dispatchStatus() {
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent('acctmgr:cloud-status', { detail: getCloudStatus() }));
@@ -348,6 +438,9 @@ export function friendlyCloudError(error) {
   if (/Invalid login credentials/i.test(message)) return '邮箱或云端密码错误。';
   if (/Email not confirmed/i.test(message)) return '请先完成邮箱验证。';
   if (/User already registered/i.test(message)) return '该邮箱已经注册，请直接登录。';
+  if (/registration code|注册暗号/i.test(message)) return '注册暗号错误。';
+  if (/same password|different from the old password/i.test(message)) return '新密码不能与当前云端密码相同。';
+  if (/expired|invalid.*token|session.*missing/i.test(message)) return '恢复链接已失效，请重新发送密码恢复邮件。';
   if (/Failed to fetch|NetworkError/i.test(message)) return '无法连接云端，请检查网络。';
   if (/decrypt|operation-specific reason/i.test(message)) return '主密码错误，无法解密云端数据。';
   return message;

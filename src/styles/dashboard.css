@@ -26,7 +26,7 @@
 /* ── Reminder List ── */
 .reminder-list {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-3);
 }
 
@@ -42,6 +42,7 @@
   transition: transform var(--transition-base),
               box-shadow var(--transition-base);
   cursor: pointer;
+  min-width: 0;
 }
 
 .reminder-item:hover {
@@ -137,6 +138,7 @@
 
 .vacancy-card .vacancy-info {
   flex: 1;
+  min-width: 0;
 }
 
 .vacancy-card .vacancy-account {
@@ -157,6 +159,7 @@
   gap: var(--space-2);
   font-size: var(--text-sm);
   font-weight: var(--weight-semibold);
+  flex-shrink: 0;
 }
 
 .vacancy-card .vacancy-seats .seats-available {
@@ -219,13 +222,29 @@
 
 
 /* ── Responsive ── */
+@media (max-width: 639px) {
+  .vacancy-card,
+  .reminder-item {
+    min-height: 85px;
+  }
+
+  .vacancy-card .vacancy-account {
+    display: -webkit-box;
+    min-height: 2.7em;
+    line-height: 1.35;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+  }
+}
+
 @media (min-width: 640px) {
   .dashboard-section {
     margin-bottom: var(--space-8);
   }
 
   .reminder-list {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .reminder-item {

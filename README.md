@@ -31,6 +31,7 @@
 - **本地数据导入/导出**：所有数据均完全保存在浏览器的 LocalStorage 中，提供一键导出为 JSON 文件备份，和从 JSON 文件恢复的功能，保护隐私安全。
 - **自动锁定**：解锁后可设置 5-120 分钟无操作自动锁定；修改主密码时会同步重新加密已有账号密码。
 - **可选云端同步**：整份备份由主密码使用 AES-256-GCM 加密后上传到 Supabase；数据库使用用户级 RLS 隔离，并通过版本号阻止多设备静默覆盖。
+- **云端账号恢复**：云端密码至少 6 位，可通过 Supabase 邮件链接重设；主密码是云端密文的解密密钥，无法通过邮件找回。
 
 > 安全边界：云端只保存整份加密密文，主密码不会上传；解锁后的本机浏览器仍保留工作缓存。手动导出的 JSON 备份包含明文业务数据，应按敏感文件保管。本工具适合个人自用，但不等同于经过专业审计的密码管理器。
 
@@ -96,6 +97,13 @@
    - `VITE_SUPABASE_PUBLISHABLE_KEY`
 4. 在 `Settings > Pages` 将 Source 设为 `GitHub Actions`，推送 `main` 分支后由工作流自动测试、构建和发布。
 5. 将最终 Pages 地址加入 Supabase Auth 的 Site URL 和 Redirect URLs。
+6. 执行 `supabase/schema.sql` 后，在 SQL Editor 单独写入注册暗号的 bcrypt 哈希，并在 `Authentication > Hooks` 将 `Before User Created` 指向 `public.hook_require_registration_code`。暗号本身不得提交到公开仓库。
+
+   ```sql
+   insert into private.registration_gate (id, code_hash)
+   values (1, extensions.crypt('<在此输入暗号>', extensions.gen_salt('bf', 12)))
+   on conflict (id) do update set code_hash = excluded.code_hash;
+   ```
 
 已有本地数据时，应先在原来的 `http://localhost:5173/` 页面创建或登录云端账号并输入原主密码，确认首次同步完成后再到 Pages 地址登录。验证邮件会回到发起注册的页面，避免从空白设备创建一份新的云端数据。
 

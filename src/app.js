@@ -1,6 +1,7 @@
 // 路由与页面切换管理
 import { render as renderLockScreen } from './pages/lock-screen.js';
 import { render as renderCloudLogin } from './pages/cloud-login.js';
+import { render as renderCloudPasswordReset } from './pages/cloud-password-reset.js';
 import { render as renderDashboard } from './pages/dashboard.js';
 import { render as renderAccounts } from './pages/accounts.js';
 import { render as renderAccountDetail } from './pages/account-detail.js';
@@ -12,12 +13,14 @@ import { getSettings, autoGenerateBillingRecords } from './utils/storage.js';
 import {
   getCloudSession,
   initializeCloud,
+  isCloudPasswordRecoveryMode,
   isCloudConfigured,
 } from './utils/cloud.js';
 
 // 页面注册表
 const pages = {
   'cloud-login': { render: renderCloudLogin, showNav: false },
+  'cloud-password-reset': { render: renderCloudPasswordReset, showNav: false },
   'lock-screen': { render: renderLockScreen, showNav: false },
   'dashboard': { render: renderDashboard, showNav: true, tab: 'dashboard' },
   'accounts': { render: renderAccounts, showNav: true, tab: 'accounts' },
@@ -70,7 +73,9 @@ export async function initApp() {
   const cloudRequired = isCloudConfigured()
     && !getCloudSession()
     && sessionStorage.getItem('acctmgrOfflineMode') !== '1';
-  if (cloudRequired) {
+  if (isCloudPasswordRecoveryMode()) {
+    navigateTo('cloud-password-reset');
+  } else if (cloudRequired) {
     navigateTo('cloud-login');
   } else if (masterPassword) {
     navigateTo('dashboard');
@@ -89,7 +94,9 @@ export function navigateTo(pageName, params = {}) {
     return;
   }
 
-  const isPublicPage = pageName === 'lock-screen' || pageName === 'cloud-login';
+  const isPublicPage = pageName === 'lock-screen'
+    || pageName === 'cloud-login'
+    || pageName === 'cloud-password-reset';
   const cloudRequired = isCloudConfigured()
     && !getCloudSession()
     && sessionStorage.getItem('acctmgrOfflineMode') !== '1';
