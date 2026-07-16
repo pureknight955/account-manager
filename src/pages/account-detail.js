@@ -436,12 +436,15 @@ function renderTeamSection(account) {
 
     <!-- Member modal -->
     <div class="modal-overlay" id="memberModal">
-      <div class="modal card" style="width: 90%; max-width: 640px; margin: 0 auto;">
+      <div class="modal card member-edit-modal">
         <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 0;">
           <span id="memberModalTitle" style="font-weight: bold;">添加成员</span>
           <button class="btn btn-ghost btn-sm" style="padding: 4px 8px; font-size: 1.2rem; line-height: 1;" id="closeMemberModal">✕</button>
         </div>
-        <div class="card-body" id="memberModalBody" style="max-height: 70vh; overflow-y: auto;"></div>
+        <div class="card-body member-edit-modal-body" id="memberModalBody"></div>
+        <div class="member-edit-modal-footer">
+          <button class="btn btn-primary" id="saveMemberBtn">保存</button>
+        </div>
       </div>
     </div>
   `;
@@ -1240,7 +1243,6 @@ function openMemberModal(container, state, existingMember) {
     `)}
     ${formGroup('备注', `<textarea class="form-input" id="m_notes" rows="2">${escHtml(m.notes || '')}</textarea>`)}
     ${historyHtml}
-    <button class="btn btn-primary" style="width: 100%; margin-top: 1rem;" id="saveMemberBtn">保存</button>
   `;
 
   modal.classList.add('modal-open');
@@ -1269,7 +1271,7 @@ function openMemberModal(container, state, existingMember) {
       showToast('成员月租金额不能小于 0');
       return;
     }
-    if (!existingRecord && m.memberStatus === 'active') {
+    if (!isEdit && m.memberStatus === 'active') {
       const activeCount = getTeamMembers(state.account.id)
         .filter((member) => member.memberStatus === 'active').length;
       if (state.account.teamLimit > 0 && activeCount >= state.account.teamLimit) {

@@ -330,6 +330,39 @@
   color: var(--color-warning);
 }
 
+.member-edit-modal {
+  width: 90%;
+  max-width: 640px;
+  max-height: 88vh;
+  margin: 0 auto;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.member-edit-modal .card-header {
+  flex-shrink: 0;
+  padding: var(--space-4);
+}
+
+.member-edit-modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.member-edit-modal-footer {
+  flex-shrink: 0;
+  padding: var(--space-4);
+  border-top: 1px solid var(--color-border-light);
+  background: var(--color-bg-elevated);
+}
+
+.member-edit-modal-footer .btn {
+  width: 100%;
+}
+
 
 /* ── Responsive ── */
 @media (min-width: 640px) {
