@@ -5,7 +5,14 @@
  * Data is stored as JSON.
  */
 
-import { getLocalDateString, getMonthlyBillingDate, getNextMonthlyBillingInfo } from './helpers.js';
+import {
+  addCalendarDays,
+  compareDateOnly,
+  getLocalDateString,
+  getMonthlyBillingDate,
+  getNextMonthlyBillingInfo,
+} from './helpers.js';
+import { SUBSCRIPTION_STATUS } from '../config.js';
 
 const PREFIX = 'acctmgr_';
 const CARD_BALANCE_MODEL_VERSION = 2;
@@ -112,6 +119,107 @@ export function getAccountById(id) {
   return accounts.find((a) => a.id === id) || null;
 }
 
+export function getSubscriptionCycles(account) {
+  return Array.isArray(account?.subscriptionCycles)
+    ? account.subscriptionCycles.map((cycle) => ({ ...cycle }))
+    : [];
+}
+
+export function getCurrentSubscriptionCycle(account) {
+  const cycles = getSubscriptionCycles(account);
+  if (!cycles.length) return null;
+  if (account?.currentSubscriptionCycleId) {
+    const current = cycles.find((cycle) => cycle.id === account.currentSubscriptionCycleId);
+    if (current) return current;
+  }
+  return cycles.find((cycle) => (
+    cycle.status === SUBSCRIPTION_STATUS.ACTIVE
+    || cycle.status === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END
+  )) || null;
+}
+
+export function getLatestSubscriptionEndDate(account) {
+  return getSubscriptionCycles(account)
+    .map((cycle) => cycle.endDate || '')
+    .filter(Boolean)
+    .sort()
+    .at(-1) || '';
+}
+
+export function getEarliestNewSubscriptionDate(account) {
+  const latestEndDate = getLatestSubscriptionEndDate(account);
+  return latestEndDate ? addCalendarDays(latestEndDate, 1) : '';
+}
+
+export function getSubscriptionLifecycleStatus(account) {
+  const current = getCurrentSubscriptionCycle(account);
+  if (current) return current.status;
+  return getSubscriptionCycles(account).length ? SUBSCRIPTION_STATUS.ENDED : 'none';
+}
+
+export function isAccountSubscriptionActive(account, referenceDate = new Date()) {
+  if (!account || account.status === 'banned') return false;
+  const cycle = getCurrentSubscriptionCycle(account);
+  if (!cycle) return false;
+  if (cycle.status === SUBSCRIPTION_STATUS.ACTIVE) return true;
+  if (cycle.status !== SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END || !cycle.endDate) return false;
+  return compareDateOnly(getLocalDateString(referenceDate), cycle.endDate) <= 0;
+}
+
+function buildSubscriptionCycle(account, now) {
+  return {
+    id: generateId(),
+    planType: account.subscriptionType,
+    startDate: account.subscriptionStartDate || '',
+    billingAnchorDate: account.subscriptionStartDate || '',
+    costUsd: Number(account.subscriptionCostUsd) || 0,
+    paymentCardId: account.paymentCardId || '',
+    status: SUBSCRIPTION_STATUS.ACTIVE,
+    endDate: '',
+    cancellationRequestedAt: '',
+    endedReason: '',
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+function copySubscriptionCycles(account) {
+  return getSubscriptionCycles(account);
+}
+
+function findMutableCurrentCycle(account) {
+  if (!Array.isArray(account.subscriptionCycles)) return null;
+  if (account.currentSubscriptionCycleId) {
+    const current = account.subscriptionCycles.find((cycle) => cycle.id === account.currentSubscriptionCycleId);
+    if (current) return current;
+  }
+  return account.subscriptionCycles.find((cycle) => (
+    cycle.status === SUBSCRIPTION_STATUS.ACTIVE
+    || cycle.status === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END
+  )) || null;
+}
+
+function clearCurrentPaidSubscription(account) {
+  account.currentSubscriptionCycleId = '';
+  account.subscriptionType = 'free';
+  account.subscriptionStatus = SUBSCRIPTION_STATUS.ENDED;
+  account.subscriptionStartDate = '';
+  account.renewalDate = '';
+  account.billingDate = '';
+  account.subscriptionCostUsd = 0;
+}
+
+function finishCurrentCycle(account, endDate, reason, now) {
+  const current = findMutableCurrentCycle(account);
+  if (current) {
+    current.status = SUBSCRIPTION_STATUS.ENDED;
+    current.endDate = endDate || current.endDate || getLocalDateString(now);
+    current.endedReason = reason || current.endedReason || 'ended';
+    current.updatedAt = now;
+  }
+  clearCurrentPaidSubscription(account);
+}
+
 /**
  * Save (create or update) an account.
  *
@@ -124,22 +232,181 @@ export function getAccountById(id) {
 export function saveAccount(account) {
   const accounts = read(KEYS.accounts, []);
   const now = new Date().toISOString();
+  const existingIndex = account.id ? accounts.findIndex((item) => item.id === account.id) : -1;
+  const previous = existingIndex >= 0 ? accounts[existingIndex] : null;
+  const next = {
+    ...(previous || {}),
+    ...account,
+    subscriptionCycles: Array.isArray(account.subscriptionCycles)
+      ? copySubscriptionCycles(account)
+      : copySubscriptionCycles(previous),
+  };
 
-  if (!account.id) {
+  if (!next.id) {
     // Create
-    account.id = generateId();
-    account.createdAt = now;
+    next.id = generateId();
+    next.createdAt = now;
   }
-  account.updatedAt = now;
 
-  const idx = accounts.findIndex((a) => a.id === account.id);
-  if (idx >= 0) {
-    accounts[idx] = { ...accounts[idx], ...account };
+  // Import legacy paid accounts into their first independent subscription cycle.
+  if (!next.subscriptionCycles.length && previous && isPaidSubscriptionValue(previous.subscriptionType)) {
+    const legacy = buildSubscriptionCycle(previous, previous.createdAt || now);
+    legacy.id = previous.currentSubscriptionCycleId || legacy.id;
+    legacy.status = previous.subscriptionStatus || SUBSCRIPTION_STATUS.ACTIVE;
+    legacy.endDate = previous.subscriptionEndDate || '';
+    legacy.cancellationRequestedAt = previous.cancellationRequestedAt || '';
+    next.subscriptionCycles.push(legacy);
+    next.currentSubscriptionCycleId = legacy.status === SUBSCRIPTION_STATUS.ENDED ? '' : legacy.id;
+  }
+
+  let current = findMutableCurrentCycle(next);
+  const isPaid = isPaidSubscriptionValue(next.subscriptionType);
+
+  if (next.status === 'banned') {
+    next.banDate = next.banDate || getLocalDateString();
+    finishCurrentCycle(next, next.banDate, 'banned', now);
+    current = null;
+  } else if (current) {
+    if (!isPaid) {
+      throw new Error('当前订阅尚未结束，请使用“取消续费”功能。');
+    }
+    if (next.subscriptionType !== current.planType) {
+      throw new Error('当前订阅尚未结束，暂不支持直接切换套餐。');
+    }
+    const existingBills = read(KEYS.billingRecords, []).filter((record) => (
+      record.subscriptionCycleId === current.id && record.status !== 'voided'
+    ));
+    if (existingBills.length && next.subscriptionStartDate !== current.startDate) {
+      throw new Error('已有账单的订阅不能修改首次扣费日期。');
+    }
+    current.startDate = next.subscriptionStartDate || current.startDate;
+    current.billingAnchorDate = current.startDate;
+    current.costUsd = Number(next.subscriptionCostUsd) || 0;
+    current.paymentCardId = next.paymentCardId || '';
+    current.updatedAt = now;
+    next.subscriptionStatus = current.status;
+    next.subscriptionEndDate = current.endDate || '';
+    next.cancellationRequestedAt = current.cancellationRequestedAt || '';
+  } else if (isPaid) {
+    if (!next.subscriptionStartDate) {
+      throw new Error('付费订阅必须填写实际首次扣费日期。');
+    }
+    if (compareDateOnly(next.subscriptionStartDate, getLocalDateString()) > 0) {
+      throw new Error('实际首次扣费日期不能晚于今天。');
+    }
+    const earliestDate = getEarliestNewSubscriptionDate(next);
+    if (earliestDate && compareDateOnly(next.subscriptionStartDate, earliestDate) < 0) {
+      throw new Error(`新订阅日期不能早于 ${earliestDate}。`);
+    }
+    const cycle = buildSubscriptionCycle(next, now);
+    next.subscriptionCycles.push(cycle);
+    next.currentSubscriptionCycleId = cycle.id;
+    next.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+    next.subscriptionEndDate = '';
+    next.cancellationRequestedAt = '';
   } else {
-    accounts.push(account);
+    next.currentSubscriptionCycleId = '';
+    next.subscriptionStatus = next.subscriptionCycles.length ? SUBSCRIPTION_STATUS.ENDED : 'none';
+  }
+
+  next.lastUserEditedAt = now;
+  next.updatedAt = now;
+
+  const idx = accounts.findIndex((a) => a.id === next.id);
+  if (idx >= 0) {
+    accounts[idx] = next;
+  } else {
+    accounts.push(next);
   }
 
   write(KEYS.accounts, accounts);
+  Object.assign(account, next);
+  return next;
+}
+
+/**
+ * Keep the current paid period usable, but stop before its next bill.
+ * The inclusive end date is the next cycle date after the latest valid bill.
+ */
+export function scheduleSubscriptionCancellation(accountId, referenceDate = new Date()) {
+  autoGenerateBillingRecords(referenceDate);
+  const account = getAccountById(accountId);
+  if (!account || account.status === 'banned') {
+    throw new Error('只有正常使用中的付费账号可以取消续费。');
+  }
+
+  account.subscriptionCycles = copySubscriptionCycles(account);
+  const current = findMutableCurrentCycle(account);
+  if (!current || current.status === SUBSCRIPTION_STATUS.ENDED) {
+    throw new Error('当前没有可以取消的付费订阅。');
+  }
+
+  const today = getLocalDateString(referenceDate);
+  const validBills = getBillingRecordsByAccountIncludingVoided(accountId)
+    .filter((record) => record.status !== 'voided')
+    .filter((record) => record.subscriptionCycleId === current.id)
+    .filter((record) => !record.billingDate || record.billingDate <= today)
+    .sort((left, right) => {
+      const periodDiff = Number(left.period || 0) - Number(right.period || 0);
+      return periodDiff || String(left.billingDate || '').localeCompare(String(right.billingDate || ''));
+    });
+  const lastBill = validBills.at(-1);
+  let endDate = '';
+  if (lastBill?.period) {
+    endDate = getMonthlyBillingDate(current.billingAnchorDate || current.startDate, Number(lastBill.period) + 1);
+  }
+  if (!endDate) {
+    endDate = getNextMonthlyBillingInfo(current.billingAnchorDate || current.startDate, referenceDate).renewalDate;
+  }
+  if (!endDate) throw new Error('无法确定订阅到期日，请先检查首次扣费日期。');
+
+  const now = new Date().toISOString();
+  current.status = SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END;
+  current.endDate = endDate;
+  current.cancellationRequestedAt = now;
+  current.endedReason = '';
+  current.updatedAt = now;
+  account.subscriptionStatus = current.status;
+  account.subscriptionEndDate = endDate;
+  account.cancellationRequestedAt = now;
+  account.renewalDate = endDate;
+  account.billingDate = endDate;
+  account.lastUserEditedAt = now;
+  account.updatedAt = now;
+  persistAccount(account);
+  return account;
+}
+
+export function restoreSubscriptionRenewal(accountId, referenceDate = new Date()) {
+  const account = getAccountById(accountId);
+  if (!account || account.status === 'banned') {
+    throw new Error('封禁账号不能恢复续费。');
+  }
+  account.subscriptionCycles = copySubscriptionCycles(account);
+  const current = findMutableCurrentCycle(account);
+  if (!current || current.status !== SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END) {
+    throw new Error('当前订阅没有处于到期取消状态。');
+  }
+  const today = getLocalDateString(referenceDate);
+  if (!current.endDate || compareDateOnly(today, current.endDate) > 0) {
+    throw new Error('当前订阅已经到期，请重新创建付费订阅。');
+  }
+
+  const now = new Date().toISOString();
+  current.status = SUBSCRIPTION_STATUS.ACTIVE;
+  current.endDate = '';
+  current.cancellationRequestedAt = '';
+  current.endedReason = '';
+  current.updatedAt = now;
+  const nextInfo = getNextMonthlyBillingInfo(current.billingAnchorDate || current.startDate, referenceDate);
+  account.subscriptionStatus = current.status;
+  account.subscriptionEndDate = '';
+  account.cancellationRequestedAt = '';
+  account.renewalDate = nextInfo.renewalDate;
+  account.billingDate = nextInfo.renewalDate;
+  account.lastUserEditedAt = now;
+  account.updatedAt = now;
+  persistAccount(account);
   return account;
 }
 
@@ -694,7 +961,8 @@ export function getBillingRecordById(id) {
  */
 export function saveBillingRecord(record) {
   const amount = Number(record?.amount);
-  if (!record?.accountId || !getAccountById(record.accountId)) {
+  const account = record?.accountId ? getAccountById(record.accountId) : null;
+  if (!record?.accountId || !account) {
     throw new Error('账单必须关联一个有效账号。');
   }
   if (!Number.isFinite(amount) || amount < 0) {
@@ -711,6 +979,15 @@ export function saveBillingRecord(record) {
   record.updatedAt = now;
   record.amount = roundMoney(amount);
   record.billingDate = record.billingDate || getLocalDateString();
+  const currentCycle = getCurrentSubscriptionCycle(account);
+  if (!record.subscriptionCycleId && currentCycle) {
+    record.subscriptionCycleId = currentCycle.id;
+  }
+  if (!record.planTypeSnapshot) {
+    const cycle = getSubscriptionCycles(account)
+      .find((item) => item.id === record.subscriptionCycleId);
+    record.planTypeSnapshot = cycle?.planType || account.subscriptionType || '';
+  }
   if (record.period !== undefined) {
     record.period = Math.max(1, Math.trunc(Number(record.period) || 1));
   }
@@ -888,88 +1165,130 @@ export function deleteIncomeRecord(id) {
  */
 export function autoGenerateBillingRecords(referenceDate = new Date()) {
   const accounts = read(KEYS.accounts, []);
+  const rawBillingRecords = read(KEYS.billingRecords, []);
   const todayStr = getLocalDateString(referenceDate);
+  const now = new Date().toISOString();
   let generated = 0;
+  let accountsChanged = false;
+  let billsChanged = false;
+
+  // One-time migration: legacy flat subscription fields become the first
+  // independent cycle and legacy bills are attached to that cycle.
+  for (const account of accounts) {
+    const before = JSON.stringify({
+      subscriptionType: account.subscriptionType,
+      subscriptionStatus: account.subscriptionStatus,
+      currentSubscriptionCycleId: account.currentSubscriptionCycleId,
+      subscriptionCycles: account.subscriptionCycles,
+    });
+    account.subscriptionCycles = copySubscriptionCycles(account);
+    let current = findMutableCurrentCycle(account);
+
+    if (!current && !account.subscriptionCycles.length && isPaidSubscriptionValue(account.subscriptionType)) {
+      const cycle = buildSubscriptionCycle(account, account.createdAt || now);
+      if (account.status === 'banned') {
+        cycle.status = SUBSCRIPTION_STATUS.ENDED;
+        cycle.endDate = account.banDate || getLocalDateString(account.updatedAt || referenceDate);
+        cycle.endedReason = 'banned';
+        account.subscriptionCycles.push(cycle);
+        clearCurrentPaidSubscription(account);
+      } else {
+        cycle.status = account.subscriptionStatus || SUBSCRIPTION_STATUS.ACTIVE;
+        cycle.endDate = account.subscriptionEndDate || '';
+        cycle.cancellationRequestedAt = account.cancellationRequestedAt || '';
+        account.subscriptionCycles.push(cycle);
+        account.currentSubscriptionCycleId = cycle.id;
+        account.subscriptionStatus = cycle.status;
+        current = cycle;
+      }
+    } else if (current) {
+      account.currentSubscriptionCycleId = current.id;
+      account.subscriptionStatus = current.status;
+    }
+
+    const cycles = account.subscriptionCycles;
+    const accountBills = rawBillingRecords.filter((record) => record.accountId === account.id);
+    for (const record of accountBills) {
+      if (!record.subscriptionCycleId && cycles.length) {
+        const matchingCycle = cycles.find((cycle) => (
+          (!cycle.startDate || !record.billingDate || record.billingDate >= cycle.startDate)
+          && (!cycle.endDate || !record.billingDate || record.billingDate <= cycle.endDate)
+        )) || cycles[0];
+        record.subscriptionCycleId = matchingCycle.id;
+        record.planTypeSnapshot = record.planTypeSnapshot || matchingCycle.planType;
+        billsChanged = true;
+      }
+    }
+
+    if (current?.status === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END
+      && current.endDate
+      && compareDateOnly(todayStr, current.endDate) > 0) {
+      finishCurrentCycle(account, current.endDate, 'canceled', now);
+      account.systemUpdatedAt = now;
+      current = null;
+    }
+
+    const after = JSON.stringify({
+      subscriptionType: account.subscriptionType,
+      subscriptionStatus: account.subscriptionStatus,
+      currentSubscriptionCycleId: account.currentSubscriptionCycleId,
+      subscriptionCycles: account.subscriptionCycles,
+    });
+    if (before !== after) accountsChanged = true;
+  }
+
+  if (accountsChanged) write(KEYS.accounts, accounts);
+  if (billsChanged) write(KEYS.billingRecords, rawBillingRecords);
 
   for (const account of accounts) {
-    if (!isPaidSubscriptionValue(account.subscriptionType)) continue;
-
-    if (isMonthlyRenewalAccount(account) && account.subscriptionStartDate) {
-      if (!account.subscriptionCostUsd) continue;
-      if (account.status === 'banned') continue;
-      generated += autoGenerateMonthlyBillingRecordsFromStart(account, todayStr, referenceDate);
-      continue;
-    }
-
-    // Determine which date field to use for billing cycles
-    let dateField = account.type === 'gpt' ? 'renewalDate' : 'billingDate';
-    let targetDate = account[dateField];
-    
-    // Fallback just in case
-    if (!targetDate && account.renewalDate) {
-      dateField = 'renewalDate';
-      targetDate = account.renewalDate;
-    }
-
-    const cycleAnchorDate = targetDate;
-    const originalTargetDate = targetDate;
-    let cycleOffset = 0;
-
-    // Only process paid accounts with a valid billing/renewal date
-    if (!targetDate || !account.subscriptionCostUsd) continue;
     if (account.status === 'banned') continue;
+    const cycle = findMutableCurrentCycle(account);
+    if (!cycle || !cycle.startDate || !cycle.costUsd) continue;
 
-    // Get existing billing records to determine the next period number
-    const existingRecords = getBillingRecordsByAccountIncludingVoided(account.id);
-    let maxPeriod = 0;
-    for (const r of existingRecords) {
-      if (r.period > maxPeriod) maxPeriod = r.period;
-    }
+    const existingRecords = getBillingRecordsByAccountIncludingVoided(account.id)
+      .filter((record) => record.subscriptionCycleId === cycle.id);
+    let period = 1;
+    let targetDate = getMonthlyBillingDate(cycle.billingAnchorDate || cycle.startDate, period);
+    const shouldGenerateDate = (date) => {
+      if (!date || date > todayStr) return false;
+      if (cycle.status === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END) {
+        return Boolean(cycle.endDate) && date < cycle.endDate;
+      }
+      return cycle.status === SUBSCRIPTION_STATUS.ACTIVE;
+    };
 
-    // Generate records for each missed billing cycle
-    while (targetDate <= todayStr) {
-      const targetYearMonth = targetDate.slice(0, 7); // "YYYY-MM"
-      const existingInMonth = existingRecords.find(
-        (r) => r.billingDate && r.billingDate.startsWith(targetYearMonth)
-      );
-
-      if (existingInMonth) {
-        if (existingInMonth.status === 'voided') {
-          cycleOffset += 1;
-          targetDate = getMonthlyBillingDate(cycleAnchorDate, cycleOffset + 1);
-          account[dateField] = targetDate;
-          continue;
-        }
-        syncAutoBillingRecord(existingInMonth, account, targetDate);
-      } else {
-        maxPeriod++;
+    while (shouldGenerateDate(targetDate)) {
+      const existing = existingRecords.find((record) => Number(record.period) === period);
+      if (!existing) {
         const newRecord = {
           id: generateId(),
           accountId: account.id,
+          subscriptionCycleId: cycle.id,
+          planTypeSnapshot: cycle.planType,
           billingDate: targetDate,
-          amount: account.subscriptionCostUsd,
-          cardId: account.paymentCardId || '',
-          paymentSource: account.paymentCardId ? 'card' : 'unknown',
-          period: maxPeriod,
+          amount: cycle.costUsd,
+          cardId: cycle.paymentCardId || '',
+          paymentSource: cycle.paymentCardId ? 'card' : 'unknown',
+          period,
           isAutoGenerated: true,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          createdAt: now,
+          updatedAt: now,
         };
-
         saveBillingRecord(newRecord);
-        // Push into existingRecords so same-month check works in this loop
         existingRecords.push(newRecord);
         generated++;
       }
-
-      // Advance billing date by 1 month
-      cycleOffset += 1;
-      targetDate = getMonthlyBillingDate(cycleAnchorDate, cycleOffset + 1);
-      account[dateField] = targetDate;
+      period += 1;
+      targetDate = getMonthlyBillingDate(cycle.billingAnchorDate || cycle.startDate, period);
     }
 
-    if (targetDate !== originalTargetDate) {
-      account.updatedAt = new Date().toISOString();
+    const nextDate = cycle.status === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END
+      ? cycle.endDate
+      : targetDate;
+    if (account.renewalDate !== nextDate || account.billingDate !== nextDate) {
+      account.renewalDate = nextDate || '';
+      account.billingDate = nextDate || '';
+      account.systemUpdatedAt = now;
       persistAccount(account);
     }
   }
@@ -977,108 +1296,10 @@ export function autoGenerateBillingRecords(referenceDate = new Date()) {
   return generated;
 }
 
-function shouldUseDefaultBillingAmount(record, subscriptionCostUsd) {
-  if (record.isManualEdited) return false;
-  const current = Number(record.amount) || 0;
-  const defaultAmount = Number(subscriptionCostUsd) || 0;
-  return current === 0 || Math.abs(current - defaultAmount) < 0.005;
-}
-
-function syncAutoBillingRecord(record, account, targetDate, period = null) {
-  const before = {
-    billingDate: record.billingDate,
-    amount: record.amount,
-    period: record.period,
-    cardId: record.cardId,
-    paymentSource: record.paymentSource,
-  };
-
-  if (!record.isManualEdited) record.billingDate = targetDate;
-  if (shouldUseDefaultBillingAmount(record, account.subscriptionCostUsd)) {
-    record.amount = account.subscriptionCostUsd;
-  }
-  if (period !== null) record.period = period;
-  if (
-    !record.cardId &&
-    account.paymentCardId &&
-    !record.isManualEdited &&
-    (!record.paymentSource || record.paymentSource === 'card')
-  ) {
-    record.paymentSource = 'card';
-    record.cardId = account.paymentCardId;
-  }
-
-  const changed = before.billingDate !== record.billingDate
-    || (Number(before.amount) || 0) !== (Number(record.amount) || 0)
-    || String(before.period ?? '') !== String(record.period ?? '')
-    || before.cardId !== record.cardId
-    || before.paymentSource !== record.paymentSource;
-
-  if (changed) saveBillingRecord(record);
-  return changed;
-}
-
 function isPaidSubscriptionValue(subscriptionType) {
   return !!subscriptionType && subscriptionType !== 'free';
 }
 
-function isMonthlyRenewalAccount(account) {
-  return account.type === 'gpt' || account.type === 'claude' || account.type === 'gemini';
-}
-
-function autoGenerateMonthlyBillingRecordsFromStart(account, todayStr, referenceDate) {
-  const existingRecords = getBillingRecordsByAccountIncludingVoided(account.id);
-  let generated = 0;
-  let period = 1;
-  let targetDate = getMonthlyBillingDate(account.subscriptionStartDate, period);
-
-  while (targetDate && targetDate <= todayStr) {
-    const targetYearMonth = targetDate.slice(0, 7);
-    const existingInCycle = existingRecords.find((r) => Number(r.period) === period)
-      || existingRecords.find((r) => {
-        return !r.period && r.billingDate && r.billingDate.startsWith(targetYearMonth);
-      });
-
-    if (existingInCycle) {
-      if (existingInCycle.status === 'voided') {
-        period += 1;
-        targetDate = getMonthlyBillingDate(account.subscriptionStartDate, period);
-        continue;
-      }
-      syncAutoBillingRecord(existingInCycle, account, targetDate, period);
-    } else {
-      const newRecord = {
-        id: generateId(),
-        accountId: account.id,
-        billingDate: targetDate,
-        amount: account.subscriptionCostUsd,
-        cardId: account.paymentCardId || '',
-        paymentSource: account.paymentCardId ? 'card' : 'unknown',
-        period,
-        isAutoGenerated: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-
-      saveBillingRecord(newRecord);
-      existingRecords.push(newRecord);
-      generated++;
-    }
-
-    period += 1;
-    targetDate = getMonthlyBillingDate(account.subscriptionStartDate, period);
-  }
-
-  const nextInfo = getNextMonthlyBillingInfo(account.subscriptionStartDate, referenceDate);
-  if (account.renewalDate !== nextInfo.renewalDate || account.billingDate !== nextInfo.renewalDate) {
-    account.renewalDate = nextInfo.renewalDate;
-    account.billingDate = nextInfo.renewalDate;
-    account.updatedAt = new Date().toISOString();
-    persistAccount(account);
-  }
-
-  return generated;
-}
 
 function persistAccount(account) {
   const allAccounts = read(KEYS.accounts, []);
@@ -1292,7 +1513,7 @@ export function runDataConsistencyCheck({ repair = false } = {}) {
   const periodKeys = new Map();
   normalizedBills.forEach((b, index) => {
     if (!b.accountId || !b.period || b.status === 'voided') return;
-    const key = `${b.accountId}::${b.period}`;
+    const key = `${b.accountId}::${b.subscriptionCycleId || 'legacy'}::${b.period}`;
     if (!periodKeys.has(key)) periodKeys.set(key, []);
     periodKeys.get(key).push(index);
   });

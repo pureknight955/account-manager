@@ -6,12 +6,13 @@
  * Left border color indicates account type.
  */
 
-import { getTeamMembers } from '../utils/storage.js';
+import { getSubscriptionLifecycleStatus, getTeamMembers } from '../utils/storage.js';
 import { formatCurrency, formatDate, maskEmail } from '../utils/helpers.js';
 import {
   SUBSCRIPTION_TYPES,
   REFUND_STATUS_OPTIONS,
   ACCOUNT_TYPES,
+  SUBSCRIPTION_STATUS,
   hasTeamManagement,
   hasRefundFields,
 } from '../config.js';
@@ -66,10 +67,14 @@ export function createAccountCard(account, onClick) {
   email.textContent = maskEmail(account.email || '');
 
   const subBadge = document.createElement('span');
-  subBadge.className = 'badge badge-outline';
+  const lifecycleStatus = getSubscriptionLifecycleStatus(account);
+  subBadge.className = `badge ${lifecycleStatus === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END ? 'badge-warning' : 'badge-outline'}`;
   const subTypes = SUBSCRIPTION_TYPES[account.type] || [];
   const subMatch = subTypes.find((s) => s.value === account.subscriptionType);
-  subBadge.textContent = subMatch ? subMatch.label : (account.subscriptionType || 'Free');
+  const subscriptionLabel = subMatch ? subMatch.label : (account.subscriptionType || 'Free');
+  subBadge.textContent = lifecycleStatus === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END
+    ? `${subscriptionLabel} · 到期取消`
+    : subscriptionLabel;
 
   info.appendChild(email);
   info.appendChild(subBadge);

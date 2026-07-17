@@ -1,10 +1,13 @@
 // 首页仪表盘
-import { getAccounts, getTeamMembers, getAllTeamMembers, getBillingRecords, getIncomeRecords, getSettings } from '../utils/storage.js';
+import {
+  getAccounts, getTeamMembers, getAllTeamMembers, getBillingRecords, getIncomeRecords, getSettings,
+  getCurrentSubscriptionCycle, getSubscriptionLifecycleStatus, isAccountSubscriptionActive,
+} from '../utils/storage.js';
 import {
   formatDate, daysUntil, formatCurrency, getCurrentMonth,
   getMemberPaymentStatus, getNextMonthlyBillingInfo,
 } from '../utils/helpers.js';
-import { isPaidSubscription, hasTeamManagement, hasMonthlyRenewal, ACCOUNT_TYPES } from '../config.js';
+import { isPaidSubscription, hasTeamManagement, hasMonthlyRenewal, ACCOUNT_TYPES, SUBSCRIPTION_STATUS } from '../config.js';
 import { buildLedgerTransactions, summarizeByAccountType } from '../utils/ledger.js';
 
 /**
@@ -50,7 +53,7 @@ function getGreeting() {
 
 function renderSeatVacancies(accounts, allMembers) {
   const businessAccounts = accounts.filter(
-    (a) => a.type === 'gpt' && a.subscriptionType === 'business'
+    (a) => a.type === 'gpt' && a.subscriptionType === 'business' && isAccountSubscriptionActive(a)
   );
 
   if (businessAccounts.length === 0) {
@@ -162,6 +165,7 @@ function renderRenewalReminders(accounts) {
       return { ...a, billingInfo };
     })
     .filter((a) => {
+      if (a.status === 'banned' || getSubscriptionLifecycleStatus(a) !== SUBSCRIPTION_STATUS.ACTIVE) return false;
       if (!a.billingInfo.renewalDate || !isPaidSubscription(a.subscriptionType)) return false;
       const days = daysUntil(a.billingInfo.renewalDate);
       return days >= 0 && days <= reminderDays;
@@ -186,7 +190,26 @@ function renderRenewalReminders(accounts) {
     `;
   }
 
-  if (!rows) {
+  const endingRows = accounts
+    .filter((account) => getSubscriptionLifecycleStatus(account) === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END)
+    .map((account) => {
+      const cycle = getCurrentSubscriptionCycle(account);
+      return { account, endDate: cycle?.endDate || account.subscriptionEndDate || '' };
+    })
+    .filter((item) => item.endDate)
+    .sort((left, right) => left.endDate.localeCompare(right.endDate))
+    .map(({ account, endDate }) => `
+      <div class="reminder-item clickable-row reminder-upcoming" data-id="${account.id}">
+        <span class="reminder-icon" style="font-size:1.5rem">🛑</span>
+        <div class="reminder-content">
+          <div class="reminder-title">${escHtml(account.nickname || account.email)}</div>
+          <div class="reminder-subtitle">${account.subscriptionType} · 已取消续费</div>
+        </div>
+        <span class="badge badge-warning">有效至 ${formatDate(endDate)}</span>
+      </div>
+    `).join('');
+
+  if (!rows && !endingRows) {
     return `
       <section class="card dashboard-section" style="padding-bottom: var(--space-4);">
         <div class="card-header section-title" style="font-size: 1.15rem; font-weight: 700; color: #f59e0b; display: flex; justify-content: flex-start; align-items: center; gap: 0.4rem; border-bottom: none; padding-bottom: 0;">
@@ -203,7 +226,8 @@ function renderRenewalReminders(accounts) {
         <span style="font-size: 1.3rem;">⚠️</span> <span>续费提醒</span>
       </div>
       <div class="card-body">
-        <div class="reminder-list">${rows}</div>
+        ${rows ? `<div class="subsection-label">即将续费</div><div class="reminder-list">${rows}</div>` : ''}
+        ${endingRows ? `<div class="subsection-label" style="margin-top:${rows ? '1rem' : '0'}">已取消续费</div><div class="reminder-list">${endingRows}</div>` : ''}
       </div>
     </section>
   `;
@@ -221,6 +245,9 @@ function renderMemberPaymentReminders(accounts, allMembers) {
       return { ...m, status };
     })
     .filter((m) => {
+      const account = accountMap[m.accountId];
+      if (!account || !isAccountSubscriptionActive(account)) return false;
+      if (!hasTeamManagement(account.type, account.subscriptionType)) return false;
       if (m.memberStatus !== 'active' || m.willRenew === false) return false;
       if (m.status.isPaid) return false;
       return m.status.urgency === 'danger' || m.status.urgency === 'warning';
@@ -386,7 +413,11 @@ function bindDashboardEvents(container) {
 
 function getAccountRenewalInfo(account) {
   if (hasMonthlyRenewal(account.type) && account.subscriptionStartDate) {
-    return getNextMonthlyBillingInfo(account.subscriptionStartDate);
+    const info = getNextMonthlyBillingInfo(account.subscriptionStartDate);
+    return {
+      renewalDate: account.renewalDate || info.renewalDate,
+      period: info.period,
+    };
   }
   return {
     renewalDate: account.renewalDate || '',

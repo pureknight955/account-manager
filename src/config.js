@@ -32,6 +32,13 @@ export const STATUS_OPTIONS = [
   { value: 'banned', label: '封禁' },
 ];
 
+// 付费订阅生命周期状态（与账号是否封禁相互独立）
+export const SUBSCRIPTION_STATUS = {
+  ACTIVE: 'active',
+  CANCEL_AT_PERIOD_END: 'cancel_at_period_end',
+  ENDED: 'ended',
+};
+
 // 退款状态选项（仅 Claude）
 export const REFUND_STATUS_OPTIONS = [
   { value: 'none', label: '未申请' },

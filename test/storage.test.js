@@ -30,6 +30,7 @@ test.beforeEach(() => localStorage.clear());
 test('card balance is always derived from opening balance, top-ups and card bills', () => {
   const account = storage.saveAccount({
     type: 'gpt', nickname: 'A', subscriptionType: 'plus', status: 'active',
+    subscriptionStartDate: '2026-07-01', subscriptionCostUsd: 20,
   });
   const card = storage.saveCard({ brand: 'bitget', lastFour: '1234', balance: 100 });
   storage.saveTopUpRecord({ cardId: card.id, amount: 50, topUpDate: '2026-07-01' });
@@ -47,6 +48,141 @@ test('card balance is always derived from opening balance, top-ups and card bill
   assert.equal(storage.getCardById(card.id).balance, 150);
   storage.editBillingRecord(bill.id, card.id, 25, 'card', '2026-07-03');
   assert.equal(storage.getCardById(card.id).balance, 125);
+});
+
+test('cancel at period end keeps the paid period and suppresses the next bill', () => {
+  const account = storage.saveAccount({
+    type: 'gpt', nickname: '取消续费', subscriptionType: 'plus', status: 'active',
+    subscriptionStartDate: '2026-01-15', subscriptionCostUsd: 20,
+  });
+
+  assert.equal(storage.autoGenerateBillingRecords('2026-02-20'), 2);
+  const canceled = storage.scheduleSubscriptionCancellation(account.id, '2026-02-20');
+  assert.equal(canceled.subscriptionStatus, 'cancel_at_period_end');
+  assert.equal(canceled.subscriptionEndDate, '2026-03-15');
+  assert.equal(storage.isAccountSubscriptionActive(canceled, '2026-03-15'), true);
+
+  assert.equal(storage.autoGenerateBillingRecords('2026-03-15'), 0);
+  assert.equal(storage.getBillingRecordsByAccount(account.id).length, 2);
+  storage.autoGenerateBillingRecords('2026-03-16');
+
+  const expired = storage.getAccountById(account.id);
+  assert.equal(expired.subscriptionType, 'free');
+  assert.equal(expired.currentSubscriptionCycleId, '');
+  assert.equal(expired.subscriptionCycles[0].status, 'ended');
+  assert.equal(expired.subscriptionCycles[0].endDate, '2026-03-15');
+  assert.equal(storage.isAccountSubscriptionActive(expired, '2026-03-16'), false);
+});
+
+test('scheduled cancellation can be restored before expiry', () => {
+  const account = storage.saveAccount({
+    type: 'claude', nickname: '恢复续费', subscriptionType: 'pro', status: 'active',
+    subscriptionStartDate: '2026-01-15', subscriptionCostUsd: 20,
+  });
+  storage.autoGenerateBillingRecords('2026-02-20');
+  storage.scheduleSubscriptionCancellation(account.id, '2026-02-20');
+
+  const restored = storage.restoreSubscriptionRenewal(account.id, '2026-03-01');
+  assert.equal(restored.subscriptionStatus, 'active');
+  assert.equal(restored.subscriptionEndDate, '');
+  assert.equal(storage.autoGenerateBillingRecords('2026-03-15'), 1);
+  assert.equal(storage.getBillingRecordsByAccount(account.id).length, 3);
+});
+
+test('a later subscription creates a new cycle, enforces a one-day gap, and backfills bills', () => {
+  const account = storage.saveAccount({
+    type: 'gpt', nickname: '重新订阅', subscriptionType: 'plus', status: 'active',
+    subscriptionStartDate: '2026-01-15', subscriptionCostUsd: 20,
+  });
+  storage.autoGenerateBillingRecords('2026-02-20');
+  storage.scheduleSubscriptionCancellation(account.id, '2026-02-20');
+  storage.autoGenerateBillingRecords('2026-03-16');
+
+  const resubscribe = storage.getAccountById(account.id);
+  resubscribe.subscriptionType = 'business';
+  resubscribe.subscriptionStartDate = '2026-03-15';
+  resubscribe.subscriptionCostUsd = 30;
+  assert.throws(() => storage.saveAccount(resubscribe), /不能早于 2026-03-16/);
+
+  resubscribe.subscriptionStartDate = '2026-03-16';
+  storage.saveAccount(resubscribe);
+  assert.equal(storage.autoGenerateBillingRecords('2026-05-20'), 3);
+
+  const bills = storage.getBillingRecordsByAccount(account.id)
+    .sort((left, right) => left.billingDate.localeCompare(right.billingDate));
+  assert.deepEqual(bills.map((bill) => bill.billingDate), [
+    '2026-01-15', '2026-02-15', '2026-03-16', '2026-04-16', '2026-05-16',
+  ]);
+  assert.equal(new Set(bills.map((bill) => bill.subscriptionCycleId)).size, 2);
+  assert.deepEqual(bills.slice(2).map((bill) => bill.period), [1, 2, 3]);
+
+  const edited = storage.getAccountById(account.id);
+  edited.subscriptionCostUsd = 35;
+  storage.saveAccount(edited);
+  storage.autoGenerateBillingRecords('2026-05-20');
+  assert.deepEqual(
+    storage.getBillingRecordsByAccount(account.id).map((bill) => bill.amount),
+    [20, 20, 30, 30, 30],
+  );
+});
+
+test('banning ends billing immediately while preserving subscription and member history', () => {
+  const account = storage.saveAccount({
+    type: 'gpt', nickname: '封禁账号', subscriptionType: 'business', status: 'active',
+    subscriptionStartDate: '2026-07-01', subscriptionCostUsd: 30, teamLimit: 5,
+  });
+  storage.saveTeamMember({
+    accountId: account.id, name: '保留成员', inviteDate: '2026-07-01', memberStatus: 'active',
+  });
+  storage.autoGenerateBillingRecords('2026-07-01');
+
+  const banned = storage.getAccountById(account.id);
+  banned.status = 'banned';
+  banned.banDate = '2026-07-10';
+  storage.saveAccount(banned);
+  assert.equal(storage.autoGenerateBillingRecords('2026-08-01'), 0);
+
+  const stored = storage.getAccountById(account.id);
+  assert.equal(stored.subscriptionType, 'free');
+  assert.equal(stored.subscriptionCycles[0].endedReason, 'banned');
+  assert.equal(stored.subscriptionCycles[0].endDate, '2026-07-10');
+  assert.equal(storage.isAccountSubscriptionActive(stored, '2026-07-10'), false);
+  assert.equal(storage.getTeamMembers(account.id).length, 1);
+  assert.equal(storage.getBillingRecordsByAccount(account.id).length, 1);
+});
+
+test('legacy flat subscriptions and bills migrate into one preserved cycle', () => {
+  localStorage.setItem('acctmgr_accounts', JSON.stringify([{
+    id: 'legacy-account',
+    type: 'gpt',
+    nickname: '旧数据',
+    subscriptionType: 'plus',
+    subscriptionStartDate: '2026-01-10',
+    subscriptionCostUsd: 20,
+    status: 'active',
+    createdAt: '2026-01-10T00:00:00.000Z',
+    updatedAt: '2026-01-10T00:00:00.000Z',
+  }]));
+  localStorage.setItem('acctmgr_billing_records', JSON.stringify([{
+    id: 'legacy-bill',
+    accountId: 'legacy-account',
+    billingDate: '2026-01-10',
+    amount: 18,
+    period: 1,
+    createdAt: '2026-01-10T00:00:00.000Z',
+    updatedAt: '2026-01-10T00:00:00.000Z',
+  }]));
+
+  assert.equal(storage.autoGenerateBillingRecords('2026-02-10'), 1);
+  const migrated = storage.getAccountById('legacy-account');
+  const bills = storage.getBillingRecordsByAccount('legacy-account')
+    .sort((left, right) => left.period - right.period);
+
+  assert.equal(migrated.subscriptionCycles.length, 1);
+  assert.equal(migrated.currentSubscriptionCycleId, migrated.subscriptionCycles[0].id);
+  assert.deepEqual(bills.map((bill) => bill.amount), [18, 20]);
+  assert.ok(bills.every((bill) => bill.subscriptionCycleId === migrated.subscriptionCycles[0].id));
+  assert.ok(bills.every((bill) => bill.planTypeSnapshot === 'plus'));
 });
 
 test('auto billing handles month ends and does not recreate a voided cycle', () => {

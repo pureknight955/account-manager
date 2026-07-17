@@ -107,6 +107,35 @@ export function getLocalDateString(value = new Date()) {
   return formatDateOnly(parseDateOnly(value));
 }
 
+/**
+ * Add calendar days to a date-only value without crossing through UTC.
+ *
+ * @param {string|Date|number} dateString
+ * @param {number} days
+ * @returns {string}
+ */
+export function addCalendarDays(dateString, days) {
+  const date = parseDateOnly(dateString);
+  const count = Number(days);
+  if (!date || !Number.isFinite(count)) return '';
+  date.setDate(date.getDate() + Math.trunc(count));
+  return formatDateOnly(date);
+}
+
+/**
+ * Compare two date-only values.
+ *
+ * @returns {-1|0|1|NaN}
+ */
+export function compareDateOnly(left, right) {
+  const leftDate = parseDateOnly(left);
+  const rightDate = parseDateOnly(right);
+  if (!leftDate || !rightDate) return NaN;
+  if (leftDate < rightDate) return -1;
+  if (leftDate > rightDate) return 1;
+  return 0;
+}
+
 // ---------------------------------------------------------------------------
 // Currency helpers
 // ---------------------------------------------------------------------------

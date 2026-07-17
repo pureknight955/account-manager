@@ -206,6 +206,13 @@
   margin-left: 2px;
 }
 
+.form-hint {
+  margin-top: 0.4rem;
+  color: var(--color-text-tertiary);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
 .form-input,
 .form-select,
 .form-textarea {

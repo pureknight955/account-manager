@@ -4,17 +4,20 @@ import {
   getTeamMembers, saveTeamMember, deleteTeamMember, generateId,
   getCards, saveCard, getBillingRecordsByAccount, getSettings,
   getBillingRecordById, deleteBillingRecord, editBillingRecord,
-  getIncomeRecordsByAccount, saveIncomeRecord, deleteIncomeRecord
+  getIncomeRecordsByAccount, saveIncomeRecord, deleteIncomeRecord,
+  autoGenerateBillingRecords, getCurrentSubscriptionCycle, getEarliestNewSubscriptionDate,
+  getLatestSubscriptionEndDate, getSubscriptionCycles, getSubscriptionLifecycleStatus,
+  scheduleSubscriptionCancellation, restoreSubscriptionRenewal,
 } from '../utils/storage.js';
 import { encrypt, decrypt } from '../utils/crypto.js';
 import {
-  formatDate, formatCurrency, getTargetPaymentPeriod, getMemberPaymentStatus, getNextMonthlyBillingInfo,
+  formatDate, formatDateTime, formatCurrency, getTargetPaymentPeriod, getMemberPaymentStatus, getNextMonthlyBillingInfo,
   getDueDateForPeriod, isPaymentRecordPaid, getPaymentRecordAmount, getPaymentRecordDate,
   getLocalDateString,
 } from '../utils/helpers.js';
 import {
   SUBSCRIPTION_TYPES, STATUS_OPTIONS, REFUND_STATUS_OPTIONS, BILLING_PAYMENT_SOURCES,
-  MEMBER_STATUS_OPTIONS, ACCOUNT_TYPES,
+  MEMBER_STATUS_OPTIONS, ACCOUNT_TYPES, SUBSCRIPTION_STATUS,
   isPaidSubscription, hasTeamManagement, hasRefundFields,
   hasRegistrationDate, hasLoginDevice, hasDirectSaleIncome, hasMonthlyRenewal,
 } from '../config.js';
@@ -73,6 +76,12 @@ function createEmptyAccount(type) {
     refundAmount: 0,
     refundDate: '',
     notes: '',
+    subscriptionStatus: 'none',
+    subscriptionEndDate: '',
+    cancellationRequestedAt: '',
+    currentSubscriptionCycleId: '',
+    subscriptionCycles: [],
+    lastUserEditedAt: '',
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -168,14 +177,24 @@ async function renderViewMode(state) {
     subHtml += viewRow('封禁日期', formatDate(a.banDate) || '-');
   }
   if (paid && a.status !== 'banned') {
+    const lifecycleStatus = getSubscriptionLifecycleStatus(a);
+    if (lifecycleStatus === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END) {
+      subHtml += viewRow('续费状态', '<span class="badge badge-warning">已取消续费，本期仍可用</span>', true);
+      subHtml += viewRow('订阅到期日', formatDate(a.subscriptionEndDate) || '-');
+      subHtml += viewRow('取消操作时间', formatDateTime(a.cancellationRequestedAt) || '-');
+    } else {
+      subHtml += viewRow('续费状态', '<span class="badge badge-success">正常续费</span>', true);
+    }
     if (hasMonthlyRenewal(a.type)) {
       const billingInfo = getAccountRenewalInfo(a);
-      subHtml += viewRow('开通时间', formatDate(a.subscriptionStartDate) || '-');
-      subHtml += viewRow(
-        '续费日期',
-        `${formatDate(billingInfo.renewalDate)}${billingInfo.period ? ` <span class="badge badge-info">第 ${billingInfo.period} 期月账单</span>` : ''}`,
-        true
-      );
+      subHtml += viewRow('实际首次扣费日', formatDate(a.subscriptionStartDate) || '-');
+      if (lifecycleStatus !== SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END) {
+        subHtml += viewRow(
+          '下次账单日',
+          `${formatDate(billingInfo.renewalDate)}${billingInfo.period ? ` <span class="badge badge-info">第 ${billingInfo.period} 期月账单</span>` : ''}`,
+          true
+        );
+      }
     } else {
       subHtml += viewRow('续费日期', formatDate(a.renewalDate) || '-');
     }
@@ -202,6 +221,17 @@ async function renderViewMode(state) {
         <span style="color: var(--color-primary); font-weight: 500;">查看历史账单 ›</span>
       </div>
     `;
+    subHtml += lifecycleStatus === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END
+      ? `
+        <div class="settings-row" style="padding: 1rem 1.5rem; text-align: center;">
+          <button class="btn btn-outline" id="restoreRenewalBtn">恢复自动续费</button>
+        </div>
+      `
+      : `
+        <div class="settings-row" style="padding: 1rem 1.5rem; text-align: center;">
+          <button class="btn btn-outline" id="cancelRenewalBtn">取消续费（本期结束后）</button>
+        </div>
+      `;
   }
   if (hasTeamManagement(a.type, a.subscriptionType)) {
     subHtml += viewRow('团队上限', a.teamLimit || '0');
@@ -221,7 +251,9 @@ async function renderViewMode(state) {
   }
   otherHtml += viewRow('备注', a.notes || '-');
   otherHtml += viewRow('创建时间', formatDate(a.createdAt) || '-');
-  otherHtml += viewRow('更新时间', formatDate(a.updatedAt) || '-');
+  otherHtml += viewRow('最后手动修改', formatDateTime(a.lastUserEditedAt || a.updatedAt) || '-');
+
+  const subscriptionHistoryHtml = renderSubscriptionHistory(a);
 
   return `
     <div class="settings-sections">
@@ -233,11 +265,45 @@ async function renderViewMode(state) {
         <div class="card-header section-title">💳 订阅与财务</div>
         <div class="card-body" style="padding: 0;">${subHtml}</div>
       </section>
+      ${subscriptionHistoryHtml}
       <section class="card settings-section">
         <div class="card-header section-title">📝 其他信息</div>
         <div class="card-body" style="padding: 0;">${otherHtml}</div>
       </section>
     </div>
+  `;
+}
+
+function renderSubscriptionHistory(account) {
+  const cycles = getSubscriptionCycles(account)
+    .sort((left, right) => String(right.startDate || '').localeCompare(String(left.startDate || '')));
+  if (!cycles.length) return '';
+
+  const rows = cycles.map((cycle) => {
+    const label = getSubLabel(account.type, cycle.planType);
+    const status = cycle.status === SUBSCRIPTION_STATUS.CANCEL_AT_PERIOD_END
+      ? '到期取消'
+      : cycle.status === SUBSCRIPTION_STATUS.ENDED
+        ? (cycle.endedReason === 'banned' ? '封禁结束' : '已结束')
+        : '进行中';
+    const end = cycle.endDate ? `至 ${formatDate(cycle.endDate)}` : '至今';
+    return `
+      <div class="settings-row" style="padding: 1rem 1.5rem; border-bottom: 1px solid var(--color-border-light);">
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:600;">${escHtml(label)} <span class="badge badge-outline">${status}</span></div>
+          <div style="margin-top:0.35rem; font-size:0.85rem; color:var(--color-text-tertiary);">
+            ${formatDate(cycle.startDate)} ${end} · $${formatCurrency(cycle.costUsd || 0)} / 月
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <section class="card settings-section">
+      <div class="card-header section-title">🕘 订阅历史</div>
+      <div class="card-body" style="padding:0;">${rows}</div>
+    </section>
   `;
 }
 
@@ -295,6 +361,8 @@ async function renderEditForm(state) {
 
   const subOptions = SUBSCRIPTION_TYPES[a.type] || [];
   const billingInfo = getAccountRenewalInfo(a);
+  const currentCycle = getCurrentSubscriptionCycle(a);
+  const earliestNewDate = getEarliestNewSubscriptionDate(a);
   const renewalDateValue = hasMonthlyRenewal(a.type)
     ? (billingInfo.renewalDate || a.renewalDate || '')
     : (a.renewalDate || '');
@@ -306,9 +374,10 @@ async function renderEditForm(state) {
   html += formGroup('密码', `<input class="form-input" id="f_password" type="text" value="${escAttr(passwordVal)}" placeholder="登录密码" />`);
 
   html += formGroup('订阅类型', `
-    <select class="form-select" id="f_subscriptionType">
+    <select class="form-select" id="f_subscriptionType" ${currentCycle ? 'disabled' : ''}>
       ${subOptions.map((o) => `<option value="${o.value}" ${a.subscriptionType === o.value ? 'selected' : ''}>${o.label}</option>`).join('')}
     </select>
+    ${currentCycle ? '<div class="form-hint">当前订阅结束前不能直接切换套餐；请先使用取消续费。</div>' : ''}
   `);
 
   html += formGroup('状态', `
@@ -329,7 +398,10 @@ async function renderEditForm(state) {
   html += `<div id="paidFields" style="${(!paid || a.status === 'banned') ? 'display:none' : ''}">
     ${hasMonthlyRenewal(a.type)
       ? `
-        ${formGroup('开通时间', `<input class="form-input" id="f_subscriptionStartDate" type="date" value="${a.subscriptionStartDate || ''}" />`)}
+        ${formGroup('实际首次扣费日', `
+          <input class="form-input" id="f_subscriptionStartDate" type="date" value="${a.subscriptionStartDate || ''}" ${earliestNewDate ? `min="${earliestNewDate}"` : ''} ${currentCycle ? 'disabled' : ''} />
+          ${earliestNewDate && !currentCycle ? `<div class="form-hint">上次订阅有效至 ${formatDate(getLatestSubscriptionEndDate(a))}；新订阅最早从 ${formatDate(earliestNewDate)} 开始。</div>` : ''}
+        `)}
         ${formGroup('续费日期（自动）', `
           <input
             class="form-input"
@@ -613,12 +685,42 @@ function bindDetailEvents(container, state, isNew) {
       showBillingHistory(container, state.account);
     });
   }
+
+  const cancelRenewalBtn = container.querySelector('#cancelRenewalBtn');
+  if (cancelRenewalBtn) {
+    cancelRenewalBtn.addEventListener('click', async () => {
+      if (!confirm('确认取消续费？当前订阅仍可使用到本期结束，届时不会生成下一期账单。')) return;
+      try {
+        state.account = scheduleSubscriptionCancellation(state.account.id);
+        showToast(`已取消续费，订阅有效至 ${formatDate(state.account.subscriptionEndDate)}`);
+        await renderPage(container, state, false);
+      } catch (error) {
+        showToast(error.message || '取消续费失败');
+      }
+    });
+  }
+
+  const restoreRenewalBtn = container.querySelector('#restoreRenewalBtn');
+  if (restoreRenewalBtn) {
+    restoreRenewalBtn.addEventListener('click', async () => {
+      try {
+        state.account = restoreSubscriptionRenewal(state.account.id);
+        showToast('已恢复自动续费');
+        await renderPage(container, state, false);
+      } catch (error) {
+        showToast(error.message || '恢复续费失败');
+      }
+    });
+  }
 }
 
 // ─── Billing History View ───────────────────────────────────────────────────
 
 function showBillingHistory(container, account) {
-  const bills = getBillingRecordsByAccount(account.id).sort((a, b) => b.period - a.period);
+  const bills = getBillingRecordsByAccount(account.id).sort((a, b) => (
+    String(b.billingDate || '').localeCompare(String(a.billingDate || ''))
+    || Number(b.period || 0) - Number(a.period || 0)
+  ));
   const cards = getCards();
   
   let html = '';
@@ -632,7 +734,7 @@ function showBillingHistory(container, account) {
       return `
         <div class="settings-row clickable-row billing-history-item" data-id="${b.id}" style="padding: 1rem; border-bottom: 1px solid var(--color-border-light); flex-direction: column; align-items: flex-start; gap: 0.5rem; cursor: pointer;">
           <div style="width: 100%; display: flex; justify-content: space-between; align-items: center;">
-            <span style="font-weight: bold; color: var(--color-primary);">第 ${b.period} 期账单 ›</span>
+            <span style="font-weight: bold; color: var(--color-primary);">${escHtml(getSubLabel(account.type, b.planTypeSnapshot || account.subscriptionType))} · 第 ${b.period} 期账单 ›</span>
             <span style="color: var(--color-danger); font-weight: bold;">-$${formatCurrency(b.amount)}</span>
           </div>
           <div style="font-size: 0.85rem; color: var(--color-text-tertiary); display: flex; justify-content: space-between; width: 100%;">
@@ -1006,11 +1108,17 @@ async function handleSave(container, state, isNew) {
   a.updatedAt = new Date().toISOString();
   if (isNew) a.createdAt = new Date().toISOString();
 
-  saveAccount(a);
+  try {
+    saveAccount(a);
+    autoGenerateBillingRecords();
+  } catch (error) {
+    showToast(error.message || '保存失败');
+    return;
+  }
   showToast('保存成功 ✓');
 
   // Switch to view mode
-  state.account = a;
+  state.account = getAccountById(a.id) || a;
   state.editing = false;
   await renderPage(container, state, false);
 }
@@ -1329,7 +1437,11 @@ function getBillingSourceLabel(source) {
 
 function getAccountRenewalInfo(account) {
   if (hasMonthlyRenewal(account.type) && account.subscriptionStartDate) {
-    return getNextMonthlyBillingInfo(account.subscriptionStartDate);
+    const info = getNextMonthlyBillingInfo(account.subscriptionStartDate);
+    return {
+      renewalDate: account.renewalDate || info.renewalDate,
+      period: info.period,
+    };
   }
 
   return {
